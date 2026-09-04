@@ -50,13 +50,18 @@ func NewVerificationService(repo VerificationRepository, secret string, ttl time
 }
 
 func (s *VerificationService) Issue(ctx context.Context, userID uuid.UUID) (string, error) {
+	code, _, err := s.IssueWithID(ctx, userID)
+	return code, err
+}
+
+func (s *VerificationService) IssueWithID(ctx context.Context, userID uuid.UUID) (string, uuid.UUID, error) {
 	if userID == uuid.Nil {
-		return "", errors.New("user id is required")
+		return "", uuid.Nil, errors.New("user id is required")
 	}
 
 	code, err := s.generateCode()
 	if err != nil {
-		return "", err
+		return "", uuid.Nil, err
 	}
 
 	now := s.now().UTC()
@@ -69,10 +74,17 @@ func (s *VerificationService) Issue(ctx context.Context, userID uuid.UUID) (stri
 	}
 
 	if err := s.repo.Create(ctx, verification); err != nil {
-		return "", err
+		return "", uuid.Nil, err
 	}
 
-	return code, nil
+	return code, verification.ID, nil
+}
+
+func (s *VerificationService) Invalidate(ctx context.Context, id uuid.UUID) error {
+	if id == uuid.Nil {
+		return errors.New("verification code id is required")
+	}
+	return s.repo.Invalidate(ctx, id)
 }
 
 func (s *VerificationService) Verify(ctx context.Context, userID uuid.UUID, code string) error {
@@ -87,7 +99,8 @@ func (s *VerificationService) Verify(ctx context.Context, userID uuid.UUID, code
 		return ErrInvalidVerificationCode
 	}
 
-	verification, err := s.repo.GetLatestActive(ctx, userID, s.now().UTC())
+	now := s.now().UTC()
+	verification, err := s.repo.GetLatestActive(ctx, userID, now)
 	if err != nil {
 		return err
 	}
@@ -97,7 +110,7 @@ func (s *VerificationService) Verify(ctx context.Context, userID uuid.UUID, code
 		return ErrInvalidVerificationCode
 	}
 
-	if err := s.repo.Consume(ctx, verification.ID, s.now().UTC()); err != nil {
+	if err := s.repo.Consume(ctx, verification.ID, now); err != nil {
 		return err
 	}
 
