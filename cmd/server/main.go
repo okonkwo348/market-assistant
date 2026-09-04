@@ -11,8 +11,10 @@ import (
 	"syscall"
 	"time"
 
+	"market-assistant/internal/businesses"
 	"market-assistant/internal/config"
 	"market-assistant/internal/db"
+	"market-assistant/internal/users"
 )
 
 func main() {
@@ -40,6 +42,31 @@ func main() {
 	}
 	cancelPing()
 	logger.Info("database connection ready")
+
+	userRepository, err := users.NewPostgresRepository(dbPool)
+	if err != nil {
+		logger.Error("user repository creation failed", "error", err)
+		os.Exit(1)
+	}
+	userService, err := users.NewService(userRepository)
+	if err != nil {
+		logger.Error("user service creation failed", "error", err)
+		os.Exit(1)
+	}
+
+	businessRepository, err := businesses.NewPostgresRepository(dbPool)
+	if err != nil {
+		logger.Error("business repository creation failed", "error", err)
+		os.Exit(1)
+	}
+	businessService, err := businesses.NewService(businessRepository)
+	if err != nil {
+		logger.Error("business service creation failed", "error", err)
+		os.Exit(1)
+	}
+
+	_ = userService
+	_ = businessService
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/health", healthHandler)
