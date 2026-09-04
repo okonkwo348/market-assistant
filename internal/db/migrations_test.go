@@ -36,16 +36,19 @@ func TestLoadMigrations(t *testing.T) {
 	if err != nil {
 		t.Fatalf("loadMigrations() error = %v", err)
 	}
-	if len(migrations) != 2 {
-		t.Fatalf("got %d migrations, want 2", len(migrations))
+	if len(migrations) != 4 {
+		t.Fatalf("got %d migrations, want 4", len(migrations))
 	}
-	if migrations[0].version != 1 || migrations[1].version != 2 {
-		t.Fatalf("unexpected migration versions: %d, %d", migrations[0].version, migrations[1].version)
-	}
-	if migrations[0].upHash == "" || migrations[1].upHash == "" {
-		t.Fatal("migration checksums must not be empty")
-	}
-	if migrations[0].downSQL == "" || migrations[1].downSQL == "" {
-		t.Fatal("down migrations must not be empty")
+
+	for i, wantVersion := range []int64{1, 2, 3, 4} {
+		if migrations[i].version != wantVersion {
+			t.Fatalf("migration %d: got version %d, want %d", i, migrations[i].version, wantVersion)
+		}
+		if migrations[i].upHash == "" {
+			t.Fatalf("migration %d: checksum must not be empty", i)
+		}
+		if migrations[i].downSQL == "" {
+			t.Fatalf("migration %d: down migration must not be empty", i)
+		}
 	}
 }
