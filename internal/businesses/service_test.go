@@ -11,11 +11,13 @@ import (
 
 type mockRepository struct {
 	createFn          func(context.Context, *Business) error
-	getByIDFn         func(context.Context, uuid.UUID) (*Business, error)
+	getByIDFn         func(context.Context, uuid.UUID, uuid.UUID) (*Business, error)
 	listByUserIDFn    func(context.Context, uuid.UUID) ([]Business, error)
 	createdBusiness   *Business
+	getByIDCalls      int
 	requestedID       uuid.UUID
 	requestedUserID   uuid.UUID
+	requestedListUser uuid.UUID
 }
 
 func (m *mockRepository) Create(ctx context.Context, business *Business) error {
@@ -26,16 +28,18 @@ func (m *mockRepository) Create(ctx context.Context, business *Business) error {
 	return nil
 }
 
-func (m *mockRepository) GetByID(ctx context.Context, id uuid.UUID) (*Business, error) {
-	m.requestedID = id
+func (m *mockRepository) GetByID(ctx context.Context, userID, businessID uuid.UUID) (*Business, error) {
+	m.getByIDCalls++
+	m.requestedUserID = userID
+	m.requestedID = businessID
 	if m.getByIDFn != nil {
-		return m.getByIDFn(ctx, id)
+		return m.getByIDFn(ctx, userID, businessID)
 	}
 	return nil, ErrNotFound
 }
 
 func (m *mockRepository) ListByUserID(ctx context.Context, userID uuid.UUID) ([]Business, error) {
-	m.requestedUserID = userID
+	m.requestedListUser = userID
 	if m.listByUserIDFn != nil {
 		return m.listByUserIDFn(ctx, userID)
 	}
@@ -117,12 +121,13 @@ func TestServiceCreate(t *testing.T) {
 }
 
 func TestServiceGetByID(t *testing.T) {
-	id := uuid.New()
-	want := &Business{ID: id, UserID: uuid.New(), Name: "Store"}
+	userID := uuid.New()
+	businessID := uuid.New()
+	want := &Business{ID: businessID, UserID: userID, Name: "Store"}
 	repo := &mockRepository{
-		getByIDFn: func(_ context.Context, gotID uuid.UUID) (*Business, error) {
-			if gotID != id {
-				return nil, errors.New("unexpected business ID")
+		getByIDFn: func(_ context.Context, gotUserID, gotBusinessID uuid.UUID) (*Business, error) {
+			if gotUserID != userID || gotBusinessID != businessID {
+				return nil, errors.New("unexpected IDs")
 			}
 			return want, nil
 		},
@@ -132,21 +137,48 @@ func TestServiceGetByID(t *testing.T) {
 		t.Fatalf("NewService() error = %v", err)
 	}
 
-	got, err := service.GetByID(context.Background(), id)
+	got, err := service.GetByID(context.Background(), userID, businessID)
 	if err != nil {
 		t.Fatalf("GetByID() error = %v", err)
 	}
 	if got != want {
 		t.Fatalf("GetByID() = %+v, want %+v", got, want)
 	}
+	if repo.requestedUserID != userID || repo.requestedID != businessID {
+		t.Fatal("GetByID() did not pass both ownership IDs to repository")
+	}
 
-	t.Run("rejects nil UUID", func(t *testing.T) {
-		_, err := service.GetByID(context.Background(), uuid.Nil)
+	t.Run("rejects nil user ID without repository call", func(t *testing.T) {
+		calls := repo.getByIDCalls
+		_, err := service.GetByID(context.Background(), uuid.Nil, businessID)
 		if err == nil {
 			t.Fatal("GetByID() error = nil, want error")
 		}
-		if repo.requestedID != id {
+		if repo.getByIDCalls != calls {
+			t.Fatal("repository was called for invalid user ID")
+		}
+	})
+
+	t.Run("rejects nil business ID without repository call", func(t *testing.T) {
+		calls := repo.getByIDCalls
+		_, err := service.GetByID(context.Background(), userID, uuid.Nil)
+		if err == nil {
+			t.Fatal("GetByID() error = nil, want error")
+		}
+		if repo.getByIDCalls != calls {
 			t.Fatal("repository was called for invalid business ID")
+		}
+	})
+
+	t.Run("returns repository not found error", func(t *testing.T) {
+		repo.getByIDFn = func(context.Context, uuid.UUID, uuid.UUID) (*Business, error) {
+			return nil, ErrNotFound
+		}
+		t.Cleanup(func() { repo.getByIDFn = nil })
+
+		_, err := service.GetByID(context.Background(), userID, businessID)
+		if !errors.Is(err, ErrNotFound) {
+			t.Fatalf("GetByID() error = %v, want ErrNotFound", err)
 		}
 	})
 }
@@ -175,12 +207,13 @@ func TestServiceListByUserID(t *testing.T) {
 		t.Fatalf("ListByUserID() = %+v, want %+v", got, want)
 	}
 
-	t.Run("rejects nil UUID", func(t *testing.T) {
+	t.Run("rejects nil UUID without repository call", func(t *testing.T) {
+		requestedUser := repo.requestedListUser
 		_, err := service.ListByUserID(context.Background(), uuid.Nil)
 		if err == nil {
 			t.Fatal("ListByUserID() error = nil, want error")
 		}
-		if repo.requestedUserID != userID {
+		if repo.requestedListUser != requestedUser {
 			t.Fatal("repository was called for invalid user ID")
 		}
 	})
