@@ -61,11 +61,8 @@ func TestVerificationFlowRequestCode(t *testing.T) {
 		t.Fatalf("RequestCode() error = %v", err)
 	}
 
-	if repo.createCalls != 1 {
-		t.Fatalf("Create calls = %d, want 1", repo.createCalls)
-	}
-	if sender.calls != 1 {
-		t.Fatalf("Send calls = %d, want 1", sender.calls)
+	if repo.createCalls != 1 || sender.calls != 1 {
+		t.Fatalf("expected one persistence and delivery call, got create=%d send=%d", repo.createCalls, sender.calls)
 	}
 	if sender.phone != phoneNumber {
 		t.Fatalf("sent phone number = %q, want %q", sender.phone, phoneNumber)
@@ -73,11 +70,11 @@ func TestVerificationFlowRequestCode(t *testing.T) {
 	if len(sender.code) != 6 {
 		t.Fatalf("sent code length = %d, want 6", len(sender.code))
 	}
-	if repo.created == nil {
-		t.Fatal("expected verification code to be persisted")
-	}
-	if repo.created.CodeHash != verification.hashCode(userID, sender.code) {
+	if repo.created == nil || repo.created.CodeHash != verification.hashCode(userID, sender.code) {
 		t.Fatal("persisted code hash does not match delivered code")
+	}
+	if repo.invalidateCalls != 0 {
+		t.Fatalf("Invalidate calls = %d, want 0", repo.invalidateCalls)
 	}
 }
 
@@ -104,14 +101,11 @@ func TestVerificationFlowRequestCodeValidation(t *testing.T) {
 			if err := flow.RequestCode(context.Background(), tt.userID, tt.phoneNumber); err == nil {
 				t.Fatal("expected validation error")
 			}
-		}
-	)}
-
-	if repo.createCalls != 0 {
-		t.Fatalf("Create calls = %d, want 0", repo.createCalls)
+		})
 	}
-	if sender.calls != 0 {
-		t.Fatalf("Send calls = %d, want 0", sender.calls)
+
+	if repo.createCalls != 0 || sender.calls != 0 {
+		t.Fatalf("unexpected calls: create=%d send=%d", repo.createCalls, sender.calls)
 	}
 }
 
@@ -134,7 +128,7 @@ func TestVerificationFlowRequestCodeRepositoryError(t *testing.T) {
 	}
 }
 
-func TestVerificationFlowRequestCodeDeliveryError(t *testing.T) {
+func TestVerificationFlowRequestCodeDeliveryErrorInvalidatesCode(t *testing.T) {
 	deliveryErr := errors.New("delivery failed")
 	repo := &verificationRepositoryStub{}
 	verification := newVerificationServiceForTest(t, repo)
@@ -148,11 +142,31 @@ func TestVerificationFlowRequestCodeDeliveryError(t *testing.T) {
 	if !errors.Is(err, deliveryErr) {
 		t.Fatalf("RequestCode() error = %v, want %v", err, deliveryErr)
 	}
-	if repo.createCalls != 1 {
-		t.Fatalf("Create calls = %d, want 1", repo.createCalls)
+	if repo.createCalls != 1 || sender.calls != 1 {
+		t.Fatalf("unexpected calls: create=%d send=%d", repo.createCalls, sender.calls)
 	}
-	if sender.calls != 1 {
-		t.Fatalf("Send calls = %d, want 1", sender.calls)
+	if repo.invalidateCalls != 1 {
+		t.Fatalf("Invalidate calls = %d, want 1", repo.invalidateCalls)
+	}
+	if repo.invalidatedID == uuid.Nil || repo.created == nil || repo.invalidatedID != repo.created.ID {
+		t.Fatalf("invalidated ID = %v, want created ID %v", repo.invalidatedID, repo.created.ID)
+	}
+}
+
+func TestVerificationFlowRequestCodeDeliveryAndInvalidationErrors(t *testing.T) {
+	deliveryErr := errors.New("delivery failed")
+	invalidateErr := errors.New("invalidate failed")
+	repo := &verificationRepositoryStub{invalidateErr: invalidateErr}
+	verification := newVerificationServiceForTest(t, repo)
+	sender := &verificationCodeSenderStub{err: deliveryErr}
+	flow, err := NewVerificationFlow(verification, sender)
+	if err != nil {
+		t.Fatalf("NewVerificationFlow() error = %v", err)
+	}
+
+	err = flow.RequestCode(context.Background(), uuid.New(), "+2348012345678")
+	if !errors.Is(err, deliveryErr) || !errors.Is(err, invalidateErr) {
+		t.Fatalf("RequestCode() error = %v, want delivery and invalidation errors", err)
 	}
 }
 
