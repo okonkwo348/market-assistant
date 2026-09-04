@@ -79,7 +79,29 @@ func main() {
 		os.Exit(1)
 	}
 
+	verificationRepository, err := auth.NewPostgresVerificationRepository(dbPool)
+	if err != nil {
+		logger.Error("verification repository creation failed", "error", err)
+		os.Exit(1)
+	}
+	verificationService, err := auth.NewVerificationService(
+		verificationRepository,
+		cfg.AuthSecret,
+		cfg.AuthTokenTTL,
+	)
+	if err != nil {
+		logger.Error("verification service creation failed", "error", err)
+		os.Exit(1)
+	}
+	verificationSender := auth.NewLogVerificationCodeSender(logger)
+	verificationFlow, err := auth.NewVerificationFlow(verificationService, verificationSender)
+	if err != nil {
+		logger.Error("verification flow creation failed", "error", err)
+		os.Exit(1)
+	}
+
 	_ = userService
+	_ = verificationFlow
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/health", healthHandler)
