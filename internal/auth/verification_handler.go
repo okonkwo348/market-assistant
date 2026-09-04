@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"strings"
 
 	"market-assistant/internal/httpapi"
 	"market-assistant/internal/users"
@@ -13,12 +14,14 @@ type VerificationHandler struct {
 	users            *users.Service
 	verificationFlow *VerificationFlow
 	verification     *VerificationService
+	tokens           *TokenManager
 }
 
 func NewVerificationHandler(
 	userService *users.Service,
 	verificationFlow *VerificationFlow,
 	verificationService *VerificationService,
+	tokenManager *TokenManager,
 ) (*VerificationHandler, error) {
 	if userService == nil {
 		return nil, errors.New("user service is nil")
@@ -29,32 +32,55 @@ func NewVerificationHandler(
 	if verificationService == nil {
 		return nil, errors.New("verification service is nil")
 	}
+	if tokenManager == nil {
+		return nil, errors.New("token manager is nil")
+	}
 
 	return &VerificationHandler{
 		users:            userService,
 		verificationFlow: verificationFlow,
 		verification:     verificationService,
+		tokens:           tokenManager,
 	}, nil
 }
 
+type verificationRequest struct {
+	PhoneNumber string `json:"phone_number"`
+}
+
 type verifyCodeRequest struct {
-	Code string `json:"code"`
+	PhoneNumber string `json:"phone_number"`
+	Code        string `json:"code"`
+}
+
+func decodeJSON(w http.ResponseWriter, r *http.Request, dst any) bool {
+	decoder := json.NewDecoder(r.Body)
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(dst); err != nil {
+		httpapi.WriteError(w, http.StatusBadRequest, "invalid request body")
+		return false
+	}
+	return true
 }
 
 func (h *VerificationHandler) RequestCode(w http.ResponseWriter, r *http.Request) {
-	userID, err := httpapi.UserIDFromContext(r.Context())
-	if err != nil {
-		httpapi.WriteError(w, http.StatusUnauthorized, err.Error())
+	var request verificationRequest
+	if !decodeJSON(w, r, &request) {
 		return
 	}
 
-	user, err := h.users.GetByID(r.Context(), userID)
+	phoneNumber := strings.TrimSpace(request.PhoneNumber)
+	if phoneNumber == "" {
+		httpapi.WriteError(w, http.StatusBadRequest, "phone number is required")
+		return
+	}
+
+	user, err := h.users.GetByPhoneNumber(r.Context(), phoneNumber)
+	if errors.Is(err, users.ErrNotFound) {
+		user, err = h.users.Create(r.Context(), phoneNumber)
+	}
 	if err != nil {
-		if errors.Is(err, users.ErrNotFound) {
-			httpapi.WriteError(w, http.StatusUnauthorized, "user not found")
-			return
-		}
-		httpapi.WriteError(w, http.StatusInternalServerError, "internal server error")
+		httpapi.WriteError(w, http.StatusInternalServerError, "failed to prepare verification")
 		return
 	}
 
@@ -67,21 +93,28 @@ func (h *VerificationHandler) RequestCode(w http.ResponseWriter, r *http.Request
 }
 
 func (h *VerificationHandler) VerifyCode(w http.ResponseWriter, r *http.Request) {
-	userID, err := httpapi.UserIDFromContext(r.Context())
-	if err != nil {
-		httpapi.WriteError(w, http.StatusUnauthorized, err.Error())
-		return
-	}
-
 	var request verifyCodeRequest
-	decoder := json.NewDecoder(r.Body)
-	decoder.DisallowUnknownFields()
-	if err := decoder.Decode(&request); err != nil {
-		httpapi.WriteError(w, http.StatusBadRequest, "invalid request body")
+	if !decodeJSON(w, r, &request) {
 		return
 	}
 
-	if err := h.verification.Verify(r.Context(), userID, request.Code); err != nil {
+	phoneNumber := strings.TrimSpace(request.PhoneNumber)
+	if phoneNumber == "" {
+		httpapi.WriteError(w, http.StatusBadRequest, "phone number is required")
+		return
+	}
+
+	user, err := h.users.GetByPhoneNumber(r.Context(), phoneNumber)
+	if err != nil {
+		if errors.Is(err, users.ErrNotFound) {
+			httpapi.WriteError(w, http.StatusBadRequest, "invalid or expired verification code")
+			return
+		}
+		httpapi.WriteError(w, http.StatusInternalServerError, "internal server error")
+		return
+	}
+
+	if err := h.verification.Verify(r.Context(), user.ID, request.Code); err != nil {
 		switch {
 		case errors.Is(err, ErrInvalidVerificationCode),
 			errors.Is(err, ErrVerificationCodeNotFound),
@@ -93,5 +126,14 @@ func (h *VerificationHandler) VerifyCode(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	httpapi.WriteJSON(w, http.StatusOK, map[string]string{"status": "verified"})
+	token, err := h.tokens.Issue(user.ID)
+	if err != nil {
+		httpapi.WriteError(w, http.StatusInternalServerError, "failed to issue authentication token")
+		return
+	}
+
+	httpapi.WriteJSON(w, http.StatusOK, map[string]string{
+		"status": "verified",
+		"token":  token,
+	})
 }
