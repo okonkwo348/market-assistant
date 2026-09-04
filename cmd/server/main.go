@@ -14,6 +14,7 @@ import (
 	"market-assistant/internal/businesses"
 	"market-assistant/internal/config"
 	"market-assistant/internal/db"
+	"market-assistant/internal/httpapi"
 	"market-assistant/internal/users"
 )
 
@@ -65,11 +66,17 @@ func main() {
 		os.Exit(1)
 	}
 
+	apiHandler, err := httpapi.NewHandler(businessService)
+	if err != nil {
+		logger.Error("http handler creation failed", "error", err)
+		os.Exit(1)
+	}
+
 	_ = userService
-	_ = businessService
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/health", healthHandler)
+	mux.HandleFunc("GET /api/businesses/{businessID}", apiHandler.GetBusiness)
 
 	server := &http.Server{
 		Addr:              ":" + cfg.Port,
