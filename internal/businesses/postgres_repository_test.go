@@ -53,7 +53,7 @@ func TestPostgresRepository(t *testing.T) {
 			t.Fatalf("Create() error = %v", err)
 		}
 
-		got, err := repo.GetByID(ctx, business.ID)
+		got, err := repo.GetByID(ctx, userID, business.ID)
 		if err != nil {
 			t.Fatalf("GetByID() error = %v", err)
 		}
@@ -69,7 +69,35 @@ func TestPostgresRepository(t *testing.T) {
 	})
 
 	t.Run("GetByID returns ErrNotFound", func(t *testing.T) {
-		_, err := repo.GetByID(ctx, uuid.New())
+		_, err := repo.GetByID(ctx, userID, uuid.New())
+		if !errors.Is(err, ErrNotFound) {
+			t.Fatalf("GetByID() error = %v, want ErrNotFound", err)
+		}
+	})
+
+	t.Run("GetByID prevents cross-user access", func(t *testing.T) {
+		business := &Business{
+			ID:        uuid.New(),
+			UserID:    userID,
+			Name:      "Private Store",
+			CreatedAt: time.Date(2026, 9, 4, 12, 0, 0, 0, time.UTC),
+		}
+		if err := repo.Create(ctx, business); err != nil {
+			t.Fatalf("Create() error = %v", err)
+		}
+
+		otherUserID := uuid.New()
+		if _, err := pool.Exec(ctx, `
+			INSERT INTO users (id, phone_number)
+			VALUES ($1, $2)
+		`, otherUserID, "+2348222222222"); err != nil {
+			t.Fatalf("insert second test user: %v", err)
+		}
+		t.Cleanup(func() {
+			_, _ = pool.Exec(ctx, `DELETE FROM users WHERE id = $1`, otherUserID)
+		})
+
+		_, err := repo.GetByID(ctx, otherUserID, business.ID)
 		if !errors.Is(err, ErrNotFound) {
 			t.Fatalf("GetByID() error = %v, want ErrNotFound", err)
 		}
@@ -113,11 +141,11 @@ func TestPostgresRepository(t *testing.T) {
 		if err != nil {
 			t.Fatalf("ListByUserID() error = %v", err)
 		}
-		if len(got) != 3 {
-			t.Fatalf("ListByUserID() returned %d businesses, want 3", len(got))
+		if len(got) != 4 {
+			t.Fatalf("ListByUserID() returned %d businesses, want 4", len(got))
 		}
-		if got[0].Name != "First Store" || got[1].Name != "Test Store" || got[2].Name != "Second Store" {
-			t.Fatalf("ListByUserID() order = [%s, %s, %s], want [First Store, Test Store, Second Store]", got[0].Name, got[1].Name, got[2].Name)
+		if got[0].Name != "First Store" || got[1].Name != "Test Store" || got[2].Name != "Private Store" || got[3].Name != "Second Store" {
+			t.Fatalf("ListByUserID() order = [%s, %s, %s, %s], want [First Store, Test Store, Private Store, Second Store]", got[0].Name, got[1].Name, got[2].Name, got[3].Name)
 		}
 		for _, business := range got {
 			if business.UserID != userID {
