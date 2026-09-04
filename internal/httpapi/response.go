@@ -17,10 +17,18 @@ func writeJSON(w http.ResponseWriter, status int, value any) {
 	_ = json.NewEncoder(w).Encode(value)
 }
 
+func WriteJSON(w http.ResponseWriter, status int, value any) {
+	writeJSON(w, status, value)
+}
+
 type errorResponse struct {
 	Error string `json:"error"`
 }
 
 func writeError(w http.ResponseWriter, status int, message string) {
 	writeJSON(w, status, errorResponse{Error: message})
+}
+
+func WriteError(w http.ResponseWriter, status int, message string) {
+	writeError(w, status, message)
 }
