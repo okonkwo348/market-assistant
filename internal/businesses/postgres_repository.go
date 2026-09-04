@@ -38,14 +38,14 @@ func (r *PostgresRepository) Create(ctx context.Context, business *Business) err
 	return nil
 }
 
-func (r *PostgresRepository) GetByID(ctx context.Context, id uuid.UUID) (*Business, error) {
+func (r *PostgresRepository) GetByID(ctx context.Context, userID, businessID uuid.UUID) (*Business, error) {
 	business := new(Business)
 
 	err := r.pool.QueryRow(ctx, `
 		SELECT id, user_id, name, created_at
 		FROM businesses
-		WHERE id = $1
-	`, id).Scan(
+		WHERE id = $1 AND user_id = $2
+	`, businessID, userID).Scan(
 		&business.ID,
 		&business.UserID,
 		&business.Name,
