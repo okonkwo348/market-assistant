@@ -6,22 +6,27 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/google/uuid"
 	"market-assistant/internal/httpapi"
 	"market-assistant/internal/users"
 )
+
+type TokenIssuer interface {
+	Issue(userID uuid.UUID) (string, error)
+}
 
 type VerificationHandler struct {
 	users            *users.Service
 	verificationFlow *VerificationFlow
 	verification     *VerificationService
-	tokens           *TokenManager
+	tokens           TokenIssuer
 }
 
 func NewVerificationHandler(
 	userService *users.Service,
 	verificationFlow *VerificationFlow,
 	verificationService *VerificationService,
-	tokenManager *TokenManager,
+	tokenIssuer TokenIssuer,
 ) (*VerificationHandler, error) {
 	if userService == nil {
 		return nil, errors.New("user service is nil")
@@ -32,15 +37,15 @@ func NewVerificationHandler(
 	if verificationService == nil {
 		return nil, errors.New("verification service is nil")
 	}
-	if tokenManager == nil {
-		return nil, errors.New("token manager is nil")
+	if tokenIssuer == nil {
+		return nil, errors.New("token issuer is nil")
 	}
 
 	return &VerificationHandler{
 		users:            userService,
 		verificationFlow: verificationFlow,
 		verification:     verificationService,
-		tokens:           tokenManager,
+		tokens:           tokenIssuer,
 	}, nil
 }
 
