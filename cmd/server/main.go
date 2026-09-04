@@ -100,7 +100,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	verificationHandler, err := httpapi.NewVerificationHandler(
+	verificationHandler, err := auth.NewVerificationHandler(
 		userService,
 		verificationFlow,
 		verificationService,
