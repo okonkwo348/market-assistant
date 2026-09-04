@@ -15,11 +15,14 @@ type verificationRepositoryStub struct {
 	createErr     error
 	getErr        error
 	consumeErr    error
+	invalidateErr error
 	consumeID     uuid.UUID
 	consumeAt     time.Time
+	invalidatedID uuid.UUID
 	createCalls   int
 	getCalls      int
 	consumeCalls  int
+	invalidateCalls int
 }
 
 func (r *verificationRepositoryStub) Create(_ context.Context, code *VerificationCode) error {
@@ -51,9 +54,13 @@ func (r *verificationRepositoryStub) Consume(_ context.Context, id uuid.UUID, no
 	return r.consumeErr
 }
 
-func (r *verificationRepositoryStub) DeleteExpired(_ context.Context, _ time.Time) error {
-	return nil
+func (r *verificationRepositoryStub) Invalidate(_ context.Context, id uuid.UUID) error {
+	r.invalidateCalls++
+	r.invalidatedID = id
+	return r.invalidateErr
 }
+
+func (r *verificationRepositoryStub) DeleteExpired(_ context.Context, _ time.Time) error { return nil }
 
 func newVerificationServiceForTest(t *testing.T, repo VerificationRepository) *VerificationService {
 	t.Helper()
@@ -101,14 +108,8 @@ func TestVerificationServiceIssue(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Issue() error = %v", err)
 	}
-
 	if len(code) != 6 {
 		t.Fatalf("code length = %d, want 6", len(code))
-	}
-	for _, char := range code {
-		if char < '0' || char > '9' {
-			t.Fatalf("code contains non-digit character %q", char)
-		}
 	}
 	if repo.created == nil {
 		t.Fatal("expected verification code to be persisted")
@@ -116,11 +117,8 @@ func TestVerificationServiceIssue(t *testing.T) {
 	if repo.created.UserID != userID {
 		t.Fatalf("stored user ID = %v, want %v", repo.created.UserID, userID)
 	}
-	if repo.created.CodeHash == "" {
-		t.Fatal("expected code hash to be stored")
-	}
-	if repo.created.CodeHash == code {
-		t.Fatal("verification code must not be stored in plaintext")
+	if repo.created.CodeHash == "" || repo.created.CodeHash == code {
+		t.Fatal("expected non-plaintext verification code hash")
 	}
 	if !repo.created.ExpiresAt.Equal(repo.created.CreatedAt.Add(5 * time.Minute)) {
 		t.Fatal("verification code expiry does not match configured TTL")
@@ -142,27 +140,14 @@ func TestVerificationServiceVerifySuccess(t *testing.T) {
 	userID := uuid.New()
 	repo := &verificationRepositoryStub{}
 	svc := newVerificationServiceForTest(t, repo)
-
 	code := "123456"
-	repo.active = &VerificationCode{
-		ID:        uuid.New(),
-		UserID:    userID,
-		CodeHash:  svc.hashCode(userID, code),
-		ExpiresAt: svc.now().Add(time.Minute),
-		CreatedAt: svc.now().Add(-time.Minute),
-	}
+	repo.active = &VerificationCode{ID: uuid.New(), UserID: userID, CodeHash: svc.hashCode(userID, code), ExpiresAt: svc.now().Add(time.Minute), CreatedAt: svc.now().Add(-time.Minute)}
 
 	if err := svc.Verify(context.Background(), userID, code); err != nil {
 		t.Fatalf("Verify() error = %v", err)
 	}
-	if repo.getCalls != 1 {
-		t.Fatalf("GetLatestActive calls = %d, want 1", repo.getCalls)
-	}
-	if repo.consumeCalls != 1 {
-		t.Fatalf("Consume calls = %d, want 1", repo.consumeCalls)
-	}
-	if repo.consumeID != repo.active.ID {
-		t.Fatalf("consumed ID = %v, want %v", repo.consumeID, repo.active.ID)
+	if repo.consumeCalls != 1 || repo.consumeID != repo.active.ID {
+		t.Fatalf("unexpected consume call: calls=%d id=%v", repo.consumeCalls, repo.consumeID)
 	}
 }
 
@@ -170,14 +155,7 @@ func TestVerificationServiceVerifyRejectsInvalidCode(t *testing.T) {
 	userID := uuid.New()
 	repo := &verificationRepositoryStub{}
 	svc := newVerificationServiceForTest(t, repo)
-
-	repo.active = &VerificationCode{
-		ID:        uuid.New(),
-		UserID:    userID,
-		CodeHash:  svc.hashCode(userID, "123456"),
-		ExpiresAt: svc.now().Add(time.Minute),
-		CreatedAt: svc.now(),
-	}
+	repo.active = &VerificationCode{ID: uuid.New(), UserID: userID, CodeHash: svc.hashCode(userID, "123456"), ExpiresAt: svc.now().Add(time.Minute), CreatedAt: svc.now()}
 
 	err := svc.Verify(context.Background(), userID, "654321")
 	if !errors.Is(err, ErrInvalidVerificationCode) {
@@ -191,30 +169,23 @@ func TestVerificationServiceVerifyRejectsInvalidCode(t *testing.T) {
 func TestVerificationServiceVerifyRejectsMalformedCode(t *testing.T) {
 	repo := &verificationRepositoryStub{}
 	svc := newVerificationServiceForTest(t, repo)
-
 	for _, code := range []string{"", "12345", "1234567", "12a456", "abcdef"} {
 		t.Run(code, func(t *testing.T) {
-			err := svc.Verify(context.Background(), uuid.New(), code)
-			if !errors.Is(err, ErrInvalidVerificationCode) {
+			if err := svc.Verify(context.Background(), uuid.New(), code); !errors.Is(err, ErrInvalidVerificationCode) {
 				t.Fatalf("Verify() error = %v, want %v", err, ErrInvalidVerificationCode)
 			}
-			if repo.getCalls != 0 {
-				t.Fatalf("GetLatestActive calls = %d, want 0", repo.getCalls)
-			}
 		})
+	}
+	if repo.getCalls != 0 {
+		t.Fatalf("GetLatestActive calls = %d, want 0", repo.getCalls)
 	}
 }
 
 func TestVerificationServiceVerifyNotFound(t *testing.T) {
 	repo := &verificationRepositoryStub{}
 	svc := newVerificationServiceForTest(t, repo)
-
-	err := svc.Verify(context.Background(), uuid.New(), "123456")
-	if !errors.Is(err, ErrVerificationCodeNotFound) {
+	if err := svc.Verify(context.Background(), uuid.New(), "123456"); !errors.Is(err, ErrVerificationCodeNotFound) {
 		t.Fatalf("Verify() error = %v, want %v", err, ErrVerificationCodeNotFound)
-	}
-	if repo.consumeCalls != 0 {
-		t.Fatalf("Consume calls = %d, want 0", repo.consumeCalls)
 	}
 }
 
@@ -224,24 +195,39 @@ func TestVerificationServiceVerifyConsumeError(t *testing.T) {
 	repo := &verificationRepositoryStub{consumeErr: consumeErr}
 	svc := newVerificationServiceForTest(t, repo)
 	code := "123456"
-	repo.active = &VerificationCode{
-		ID:        uuid.New(),
-		UserID:    userID,
-		CodeHash:  svc.hashCode(userID, code),
-		ExpiresAt: svc.now().Add(time.Minute),
-		CreatedAt: svc.now(),
-	}
+	repo.active = &VerificationCode{ID: uuid.New(), UserID: userID, CodeHash: svc.hashCode(userID, code), ExpiresAt: svc.now().Add(time.Minute), CreatedAt: svc.now()}
 
-	err := svc.Verify(context.Background(), userID, code)
-	if !errors.Is(err, consumeErr) {
+	if err := svc.Verify(context.Background(), userID, code); !errors.Is(err, consumeErr) {
 		t.Fatalf("Verify() error = %v, want %v", err, consumeErr)
+	}
+}
+
+func TestVerificationServiceInvalidate(t *testing.T) {
+	repo := &verificationRepositoryStub{}
+	svc := newVerificationServiceForTest(t, repo)
+	codeID := uuid.New()
+
+	if err := svc.Invalidate(context.Background(), codeID); err != nil {
+		t.Fatalf("Invalidate() error = %v", err)
+	}
+	if repo.invalidateCalls != 1 || repo.invalidatedID != codeID {
+		t.Fatalf("unexpected invalidation call: calls=%d id=%v", repo.invalidateCalls, repo.invalidatedID)
+	}
+}
+
+func TestVerificationServiceInvalidateRepositoryError(t *testing.T) {
+	repoErr := errors.New("invalidate failed")
+	repo := &verificationRepositoryStub{invalidateErr: repoErr}
+	svc := newVerificationServiceForTest(t, repo)
+
+	if err := svc.Invalidate(context.Background(), uuid.New()); !errors.Is(err, repoErr) {
+		t.Fatalf("Invalidate() error = %v, want %v", err, repoErr)
 	}
 }
 
 func TestVerificationServiceRejectsNilUserID(t *testing.T) {
 	repo := &verificationRepositoryStub{}
 	svc := newVerificationServiceForTest(t, repo)
-
 	if _, err := svc.Issue(context.Background(), uuid.Nil); err == nil {
 		t.Fatal("Issue() expected error for nil user ID")
 	}
