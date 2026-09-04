@@ -104,6 +104,7 @@ func main() {
 		userService,
 		verificationFlow,
 		verificationService,
+		tokenManager,
 	)
 	if err != nil {
 		logger.Error("verification handler creation failed", "error", err)
@@ -119,8 +120,8 @@ func main() {
 
 	mux.Handle("GET /api/businesses", authenticated(http.HandlerFunc(apiHandler.ListBusinesses)))
 	mux.Handle("GET /api/businesses/{businessID}", authenticated(http.HandlerFunc(apiHandler.GetBusiness)))
-	mux.Handle("POST /api/auth/verification/request", authenticated(http.HandlerFunc(verificationHandler.RequestCode)))
-	mux.Handle("POST /api/auth/verification/verify", authenticated(http.HandlerFunc(verificationHandler.VerifyCode)))
+	mux.Handle("POST /api/auth/verification/request", http.HandlerFunc(verificationHandler.RequestCode))
+	mux.Handle("POST /api/auth/verification/verify", http.HandlerFunc(verificationHandler.VerifyCode))
 
 	server := &http.Server{
 		Addr:              ":" + cfg.Port,
