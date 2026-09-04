@@ -35,12 +35,15 @@ func (f *VerificationFlow) RequestCode(ctx context.Context, userID uuid.UUID, ph
 		return errors.New("phone number is required")
 	}
 
-	code, err := f.verification.Issue(ctx, userID)
+	code, codeID, err := f.verification.IssueWithID(ctx, userID)
 	if err != nil {
 		return err
 	}
 
 	if err := f.sender.Send(ctx, phoneNumber, code); err != nil {
+		if invalidateErr := f.verification.Invalidate(ctx, codeID); invalidateErr != nil {
+			return errors.Join(err, invalidateErr)
+		}
 		return err
 	}
 
