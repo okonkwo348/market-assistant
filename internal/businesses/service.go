@@ -46,12 +46,15 @@ func (s *Service) Create(ctx context.Context, userID uuid.UUID, name string) (*B
 	return business, nil
 }
 
-func (s *Service) GetByID(ctx context.Context, id uuid.UUID) (*Business, error) {
-	if id == uuid.Nil {
+func (s *Service) GetByID(ctx context.Context, userID, businessID uuid.UUID) (*Business, error) {
+	if userID == uuid.Nil {
+		return nil, errors.New("user id is required")
+	}
+	if businessID == uuid.Nil {
 		return nil, errors.New("business id is required")
 	}
 
-	return s.repo.GetByID(ctx, id)
+	return s.repo.GetByID(ctx, userID, businessID)
 }
 
 func (s *Service) ListByUserID(ctx context.Context, userID uuid.UUID) ([]Business, error) {
