@@ -24,6 +24,7 @@ type VerificationRepository interface {
 	Create(ctx context.Context, code *VerificationCode) error
 	GetLatestActive(ctx context.Context, userID uuid.UUID, now time.Time) (*VerificationCode, error)
 	Consume(ctx context.Context, id uuid.UUID, now time.Time) error
+	Invalidate(ctx context.Context, id uuid.UUID) error
 	DeleteExpired(ctx context.Context, now time.Time) error
 }
 
@@ -110,6 +111,22 @@ func (r *PostgresVerificationRepository) Consume(ctx context.Context, id uuid.UU
 	}
 	if result.RowsAffected() == 0 {
 		return ErrVerificationCodeNotFound
+	}
+	return nil
+}
+
+func (r *PostgresVerificationRepository) Invalidate(ctx context.Context, id uuid.UUID) error {
+	if id == uuid.Nil {
+		return errors.New("verification code id is required")
+	}
+
+	_, err := r.pool.Exec(ctx, `
+		UPDATE verification_codes
+		SET consumed_at = COALESCE(consumed_at, CURRENT_TIMESTAMP)
+		WHERE id = $1
+	`, id)
+	if err != nil {
+		return fmt.Errorf("invalidate verification code: %w", err)
 	}
 	return nil
 }
