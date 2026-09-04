@@ -105,13 +105,23 @@ func (s *VerificationService) Verify(ctx context.Context, userID uuid.UUID, code
 }
 
 func (s *VerificationService) generateCode() (string, error) {
-	bytes := make([]byte, 4)
-	if _, err := s.rand(bytes); err != nil {
-		return "", fmt.Errorf("generate verification code: %w", err)
-	}
+	const codeSpace = uint32(1000000)
+	const maxUint32 = uint64(1<<32) - 1
+	const rejectionLimit = uint64(maxUint32+1) / uint64(codeSpace) * uint64(codeSpace)
 
-	value := uint32(bytes[0])<<24 | uint32(bytes[1])<<16 | uint32(bytes[2])<<8 | uint32(bytes[3])
-	return fmt.Sprintf("%06d", value%1000000), nil
+	bytes := make([]byte, 4)
+	for {
+		if _, err := s.rand(bytes); err != nil {
+			return "", fmt.Errorf("generate verification code: %w", err)
+		}
+
+		value := uint64(bytes[0])<<24 | uint64(bytes[1])<<16 | uint64(bytes[2])<<8 | uint64(bytes[3])
+		if value >= rejectionLimit {
+			continue
+		}
+
+		return fmt.Sprintf("%06d", value%uint64(codeSpace)), nil
+	}
 }
 
 func (s *VerificationService) hashCode(userID uuid.UUID, code string) string {
