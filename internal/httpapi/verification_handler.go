@@ -7,7 +7,6 @@ import (
 
 	"market-assistant/internal/auth"
 	"market-assistant/internal/users"
-	"github.com/google/uuid"
 )
 
 type VerificationHandler struct {
@@ -95,8 +94,4 @@ func (h *VerificationHandler) VerifyCode(w http.ResponseWriter, r *http.Request)
 	}
 
 	writeJSON(w, http.StatusOK, map[string]string{"status": "verified"})
-}
-
-func validVerificationUserID(id uuid.UUID) bool {
-	return id != uuid.Nil
 }
