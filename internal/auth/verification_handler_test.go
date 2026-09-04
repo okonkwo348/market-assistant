@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"market-assistant/internal/httpapi"
 	"market-assistant/internal/users"
@@ -19,36 +20,37 @@ type verificationHandlerUserRepositoryStub struct {
 	err  error
 }
 
-func (s *verificationHandlerUserRepositoryStub) Create(context.Context, *users.User) error {
-	return nil
-}
-
+func (s *verificationHandlerUserRepositoryStub) Create(context.Context, *users.User) error { return nil }
 func (s *verificationHandlerUserRepositoryStub) GetByID(context.Context, uuid.UUID) (*users.User, error) {
 	return s.user, s.err
 }
-
 func (s *verificationHandlerUserRepositoryStub) GetByPhoneNumber(context.Context, string) (*users.User, error) {
 	return s.user, s.err
 }
 
-type verificationHandlerVerificationFlowStub struct {
-	called bool
-	err    error
-}
+func newVerificationHandler(t *testing.T, userID uuid.UUID, repo *verificationRepositoryStub, sender VerificationCodeSender) *VerificationHandler {
+	t.Helper()
 
-func (s *verificationHandlerVerificationFlowStub) RequestCode(context.Context, uuid.UUID, string) error {
-	s.called = true
-	return s.err
-}
+	userService, err := users.NewService(&verificationHandlerUserRepositoryStub{
+		user: &users.User{ID: userID, PhoneNumber: "+2348012345678"},
+	})
+	if err != nil {
+		t.Fatalf("create user service: %v", err)
+	}
 
-type verificationHandlerVerificationStub struct {
-	called bool
-	err    error
-}
-
-func (s *verificationHandlerVerificationStub) Verify(context.Context, uuid.UUID, string) error {
-	s.called = true
-	return s.err
+	verificationService, err := NewVerificationService(repo, strings.Repeat("a", 32), 5*time.Minute)
+	if err != nil {
+		t.Fatalf("create verification service: %v", err)
+	}
+	verificationFlow, err := NewVerificationFlow(verificationService, sender)
+	if err != nil {
+		t.Fatalf("create verification flow: %v", err)
+	}
+	handler, err := NewVerificationHandler(userService, verificationFlow, verificationService)
+	if err != nil {
+		t.Fatalf("create verification handler: %v", err)
+	}
+	return handler
 }
 
 func TestNewVerificationHandlerValidation(t *testing.T) {
@@ -57,19 +59,16 @@ func TestNewVerificationHandlerValidation(t *testing.T) {
 		t.Fatalf("create user service: %v", err)
 	}
 
-	verificationFlow := &VerificationFlow{}
-	verificationService := &VerificationService{}
-
 	tests := []struct {
-		name          string
-		userService   *users.Service
-		flow          *VerificationFlow
-		verification  *VerificationService
-		wantErr       string
+		name         string
+		userService  *users.Service
+		flow         *VerificationFlow
+		verification *VerificationService
+		wantErr      string
 	}{
-		{"nil user service", nil, verificationFlow, verificationService, "user service is nil"},
-		{"nil flow", userService, nil, verificationService, "verification flow is nil"},
-		{"nil verification service", userService, verificationFlow, nil, "verification service is nil"},
+		{"nil user service", nil, &VerificationFlow{}, &VerificationService{}, "user service is nil"},
+		{"nil flow", userService, nil, &VerificationService{}, "verification flow is nil"},
+		{"nil verification service", userService, &VerificationFlow{}, nil, "verification service is nil"},
 	}
 
 	for _, tt := range tests {
@@ -84,36 +83,9 @@ func TestNewVerificationHandlerValidation(t *testing.T) {
 
 func TestVerificationHandlerRequestCode(t *testing.T) {
 	userID := uuid.New()
-	userService, err := users.NewService(&verificationHandlerUserRepositoryStub{
-		user: &users.User{ID: userID, PhoneNumber: "+2348012345678"},
-	})
-	if err != nil {
-		t.Fatalf("create user service: %v", err)
-	}
-
-	flow := &verificationHandlerVerificationFlowStub{}
-	verification := &verificationHandlerVerificationStub{}
-
-	// The handler depends on concrete flow/service types, so this test verifies
-	// the HTTP behavior through the real collaborators and a stub repository.
-	_ = flow
-	_ = verification
-
-	verificationRepo := &verificationRepositoryStub{}
-	verificationService, err := NewVerificationService(verificationRepo, strings.Repeat("a", 32), 5*60*1e9)
-	if err != nil {
-		t.Fatalf("create verification service: %v", err)
-	}
-	verificationSender := &verificationSenderStub{}
-	verificationFlow, err := NewVerificationFlow(verificationService, verificationSender)
-	if err != nil {
-		t.Fatalf("create verification flow: %v", err)
-	}
-
-	handler, err := NewVerificationHandler(userService, verificationFlow, verificationService)
-	if err != nil {
-		t.Fatalf("create handler: %v", err)
-	}
+	repo := &verificationRepositoryStub{}
+	sender := &verificationSenderStub{}
+	handler := newVerificationHandler(t, userID, repo, sender)
 
 	req := httptest.NewRequest(http.MethodPost, "/api/auth/verification/request", nil)
 	req = req.WithContext(httpapi.WithUserID(req.Context(), userID))
@@ -124,29 +96,13 @@ func TestVerificationHandlerRequestCode(t *testing.T) {
 	if recorder.Code != http.StatusAccepted {
 		t.Fatalf("expected %d, got %d", http.StatusAccepted, recorder.Code)
 	}
-	if !verificationSender.called {
+	if !sender.called {
 		t.Fatal("expected verification sender to be called")
 	}
 }
 
 func TestVerificationHandlerRequestCodeUnauthorized(t *testing.T) {
-	userService, err := users.NewService(&verificationHandlerUserRepositoryStub{})
-	if err != nil {
-		t.Fatalf("create user service: %v", err)
-	}
-	verificationRepo := &verificationRepositoryStub{}
-	verificationService, err := NewVerificationService(verificationRepo, strings.Repeat("a", 32), 5*60*1e9)
-	if err != nil {
-		t.Fatalf("create verification service: %v", err)
-	}
-	verificationFlow, err := NewVerificationFlow(verificationService, &verificationSenderStub{})
-	if err != nil {
-		t.Fatalf("create verification flow: %v", err)
-	}
-	handler, err := NewVerificationHandler(userService, verificationFlow, verificationService)
-	if err != nil {
-		t.Fatalf("create handler: %v", err)
-	}
+	handler := newVerificationHandler(t, uuid.New(), &verificationRepositoryStub{}, &verificationSenderStub{})
 
 	req := httptest.NewRequest(http.MethodPost, "/api/auth/verification/request", nil)
 	recorder := httptest.NewRecorder()
@@ -159,25 +115,7 @@ func TestVerificationHandlerRequestCodeUnauthorized(t *testing.T) {
 
 func TestVerificationHandlerVerifyCodeBadRequest(t *testing.T) {
 	userID := uuid.New()
-	userService, err := users.NewService(&verificationHandlerUserRepositoryStub{
-		user: &users.User{ID: userID, PhoneNumber: "+2348012345678"},
-	})
-	if err != nil {
-		t.Fatalf("create user service: %v", err)
-	}
-	verificationRepo := &verificationRepositoryStub{}
-	verificationService, err := NewVerificationService(verificationRepo, strings.Repeat("a", 32), 5*60*1e9)
-	if err != nil {
-		t.Fatalf("create verification service: %v", err)
-	}
-	verificationFlow, err := NewVerificationFlow(verificationService, &verificationSenderStub{})
-	if err != nil {
-		t.Fatalf("create verification flow: %v", err)
-	}
-	handler, err := NewVerificationHandler(userService, verificationFlow, verificationService)
-	if err != nil {
-		t.Fatalf("create handler: %v", err)
-	}
+	handler := newVerificationHandler(t, userID, &verificationRepositoryStub{}, &verificationSenderStub{})
 
 	req := httptest.NewRequest(http.MethodPost, "/api/auth/verification/verify", strings.NewReader(`{"code":`))
 	req = req.WithContext(httpapi.WithUserID(req.Context(), userID))
@@ -191,36 +129,30 @@ func TestVerificationHandlerVerifyCodeBadRequest(t *testing.T) {
 
 func TestVerificationHandlerVerifyCodeInvalid(t *testing.T) {
 	userID := uuid.New()
-	userService, err := users.NewService(&verificationHandlerUserRepositoryStub{
-		user: &users.User{ID: userID, PhoneNumber: "+2348012345678"},
-	})
-	if err != nil {
-		t.Fatalf("create user service: %v", err)
-	}
-
 	repo := &verificationRepositoryStub{}
-	verificationService, err := NewVerificationService(repo, strings.Repeat("a", 32), 5*60*1e9)
-	if err != nil {
-		t.Fatalf("create verification service: %v", err)
-	}
-	verificationFlow, err := NewVerificationFlow(verificationService, &verificationSenderStub{})
-	if err != nil {
-		t.Fatalf("create verification flow: %v", err)
-	}
-	handler, err := NewVerificationHandler(userService, verificationFlow, verificationService)
-	if err != nil {
-		t.Fatalf("create handler: %v", err)
-	}
+	handler := newVerificationHandler(t, userID, repo, &verificationSenderStub{})
 
 	req := httptest.NewRequest(http.MethodPost, "/api/auth/verification/verify", strings.NewReader(`{"code":"000000"}`))
 	req = req.WithContext(httpapi.WithUserID(req.Context(), userID))
 	recorder := httptest.NewRecorder()
 	handler.VerifyCode(recorder, req)
 
-	if !errors.Is(repo.err, nil) {
-		t.Fatalf("unexpected repository error: %v", repo.err)
-	}
 	if recorder.Code != http.StatusBadRequest {
 		t.Fatalf("expected %d, got %d", http.StatusBadRequest, recorder.Code)
+	}
+}
+
+func TestVerificationHandlerVerifyCodeRepositoryError(t *testing.T) {
+	userID := uuid.New()
+	repo := &verificationRepositoryStub{err: errors.New("database unavailable")}
+	handler := newVerificationHandler(t, userID, repo, &verificationSenderStub{})
+
+	req := httptest.NewRequest(http.MethodPost, "/api/auth/verification/verify", strings.NewReader(`{"code":"123456"}`))
+	req = req.WithContext(httpapi.WithUserID(req.Context(), userID))
+	recorder := httptest.NewRecorder()
+	handler.VerifyCode(recorder, req)
+
+	if recorder.Code != http.StatusInternalServerError {
+		t.Fatalf("expected %d, got %d", http.StatusInternalServerError, recorder.Code)
 	}
 }
