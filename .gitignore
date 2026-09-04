@@ -1,0 +1,13 @@
+# Environment / secrets
+.env
+
+# Go build output
+/bin/
+/dist/
+*.test
+*.out
+
+# OS/editor files
+.DS_Store
+.idea/
+.vscode/
