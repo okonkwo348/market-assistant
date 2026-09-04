@@ -14,6 +14,8 @@ type Config struct {
 	AppName     string
 	Port        string
 	DatabaseURL string
+	AuthSecret  string
+	AuthTokenTTL time.Duration
 
 	HTTPReadTimeout       time.Duration
 	HTTPReadHeaderTimeout time.Duration
@@ -29,9 +31,14 @@ func Load() (Config, error) {
 		AppName:     getEnv("APP_NAME", "market-assistant"),
 		Port:        getEnv("PORT", "8080"),
 		DatabaseURL: strings.TrimSpace(os.Getenv("DATABASE_URL")),
+		AuthSecret:  strings.TrimSpace(os.Getenv("AUTH_SECRET")),
 	}
 
 	var err error
+	cfg.AuthTokenTTL, err = getDuration("AUTH_TOKEN_TTL", 24*time.Hour)
+	if err != nil {
+		return Config{}, err
+	}
 	cfg.HTTPReadTimeout, err = getDuration("HTTP_READ_TIMEOUT", 10*time.Second)
 	if err != nil {
 		return Config{}, err
@@ -73,6 +80,14 @@ func (c Config) Validate() error {
 
 	if strings.TrimSpace(c.DatabaseURL) == "" {
 		errs = append(errs, "DATABASE_URL is required")
+	}
+
+	if len(strings.TrimSpace(c.AuthSecret)) < 32 {
+		errs = append(errs, "AUTH_SECRET must be at least 32 characters")
+	}
+
+	if c.AuthTokenTTL <= 0 {
+		errs = append(errs, "AUTH_TOKEN_TTL must be greater than zero")
 	}
 
 	port, err := strconv.Atoi(c.Port)
