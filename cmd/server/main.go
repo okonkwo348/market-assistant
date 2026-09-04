@@ -11,6 +11,7 @@ import (
 	"syscall"
 	"time"
 
+	"market-assistant/internal/auth"
 	"market-assistant/internal/businesses"
 	"market-assistant/internal/config"
 	"market-assistant/internal/db"
@@ -72,12 +73,23 @@ func main() {
 		os.Exit(1)
 	}
 
+	tokenManager, err := auth.NewTokenManager(cfg.AuthSecret, cfg.AuthTokenTTL)
+	if err != nil {
+		logger.Error("authentication setup failed", "error", err)
+		os.Exit(1)
+	}
+
 	_ = userService
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/health", healthHandler)
-	mux.Handle("GET /api/businesses", httpapi.RequireUser(http.HandlerFunc(apiHandler.ListBusinesses)))
-	mux.Handle("GET /api/businesses/{businessID}", httpapi.RequireUser(http.HandlerFunc(apiHandler.GetBusiness)))
+
+	authenticated := func(next http.Handler) http.Handler {
+		return tokenManager.Middleware(httpapi.RequireUser(next))
+	}
+
+	mux.Handle("GET /api/businesses", authenticated(http.HandlerFunc(apiHandler.ListBusinesses)))
+	mux.Handle("GET /api/businesses/{businessID}", authenticated(http.HandlerFunc(apiHandler.GetBusiness)))
 
 	server := &http.Server{
 		Addr:              ":" + cfg.Port,
