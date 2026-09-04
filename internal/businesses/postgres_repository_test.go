@@ -2,9 +2,15 @@ package businesses
 
 import (
 	"context"
+	"errors"
+	"os"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgxpool"
+
+	"market-assistant/internal/db"
 )
 
 func TestNewPostgresRepository(t *testing.T) {
@@ -16,31 +22,134 @@ func TestNewPostgresRepository(t *testing.T) {
 	})
 }
 
-func TestPostgresRepositoryCreate(t *testing.T) {
-	repo := &PostgresRepository{}
+func TestPostgresRepository(t *testing.T) {
+	pool := newTestPool(t)
+	repo, err := NewPostgresRepository(pool)
+	if err != nil {
+		t.Fatalf("NewPostgresRepository() error = %v", err)
+	}
 
-	t.Run("rejects nil business", func(t *testing.T) {
-		err := repo.Create(context.Background(), nil)
-		if err == nil {
+	ctx := context.Background()
+	userID := uuid.New()
+	if _, err := pool.Exec(ctx, `
+		INSERT INTO users (id, phone_number)
+		VALUES ($1, $2)
+	`, userID, "+2348000000000"); err != nil {
+		t.Fatalf("insert test user: %v", err)
+	}
+	t.Cleanup(func() {
+		_, _ = pool.Exec(ctx, `DELETE FROM users WHERE id = $1`, userID)
+	})
+
+	t.Run("Create persists business", func(t *testing.T) {
+		business := &Business{
+			ID:        uuid.New(),
+			UserID:    userID,
+			Name:      "Test Store",
+			CreatedAt: time.Date(2026, 9, 4, 10, 0, 0, 0, time.UTC),
+		}
+
+		if err := repo.Create(ctx, business); err != nil {
+			t.Fatalf("Create() error = %v", err)
+		}
+
+		got, err := repo.GetByID(ctx, business.ID)
+		if err != nil {
+			t.Fatalf("GetByID() error = %v", err)
+		}
+		if *got != *business {
+			t.Fatalf("GetByID() = %+v, want %+v", got, business)
+		}
+	})
+
+	t.Run("Create rejects nil business", func(t *testing.T) {
+		if err := repo.Create(ctx, nil); err == nil {
 			t.Fatal("Create() error = nil, want error")
+		}
+	})
+
+	t.Run("GetByID returns ErrNotFound", func(t *testing.T) {
+		_, err := repo.GetByID(ctx, uuid.New())
+		if !errors.Is(err, ErrNotFound) {
+			t.Fatalf("GetByID() error = %v, want ErrNotFound", err)
+		}
+	})
+
+	t.Run("ListByUserID returns only matching businesses in order", func(t *testing.T) {
+		first := &Business{
+			ID:        uuid.New(),
+			UserID:    userID,
+			Name:      "First Store",
+			CreatedAt: time.Date(2026, 9, 4, 9, 0, 0, 0, time.UTC),
+		}
+		second := &Business{
+			ID:        uuid.New(),
+			UserID:    userID,
+			Name:      "Second Store",
+			CreatedAt: time.Date(2026, 9, 4, 11, 0, 0, 0, time.UTC),
+		}
+		otherUserID := uuid.New()
+		other := &Business{
+			ID:        uuid.New(),
+			UserID:    otherUserID,
+			Name:      "Other Store",
+			CreatedAt: time.Date(2026, 9, 4, 8, 0, 0, 0, time.UTC),
+		}
+
+		if _, err := pool.Exec(ctx, `INSERT INTO users (id, phone_number) VALUES ($1, $2)`, otherUserID, "+2348111111111"); err != nil {
+			t.Fatalf("insert second test user: %v", err)
+		}
+		t.Cleanup(func() {
+			_, _ = pool.Exec(ctx, `DELETE FROM users WHERE id = $1`, otherUserID)
+		})
+
+		for _, business := range []*Business{first, second, other} {
+			if err := repo.Create(ctx, business); err != nil {
+				t.Fatalf("Create(%q) error = %v", business.Name, err)
+			}
+		}
+
+		got, err := repo.ListByUserID(ctx, userID)
+		if err != nil {
+			t.Fatalf("ListByUserID() error = %v", err)
+		}
+		if len(got) != 3 {
+			t.Fatalf("ListByUserID() returned %d businesses, want 3", len(got))
+		}
+		if got[0].Name != "First Store" || got[1].Name != "Test Store" || got[2].Name != "Second Store" {
+			t.Fatalf("ListByUserID() order = [%s, %s, %s], want [First Store, Test Store, Second Store]", got[0].Name, got[1].Name, got[2].Name)
+		}
+		for _, business := range got {
+			if business.UserID != userID {
+				t.Fatalf("ListByUserID() returned business for user %s, want %s", business.UserID, userID)
+			}
 		}
 	})
 }
 
-func TestPostgresRepositoryGetByID(t *testing.T) {
-	repo := &PostgresRepository{}
+func newTestPool(t *testing.T) *pgxpool.Pool {
+	t.Helper()
 
-	_, err := repo.GetByID(context.Background(), uuid.New())
-	if err == nil {
-		t.Fatal("GetByID() error = nil, want error")
+	databaseURL := os.Getenv("TEST_DATABASE_URL")
+	if databaseURL == "" {
+		t.Skip("TEST_DATABASE_URL is not set")
 	}
-}
 
-func TestPostgresRepositoryListByUserID(t *testing.T) {
-	repo := &PostgresRepository{}
-
-	_, err := repo.ListByUserID(context.Background(), uuid.New())
-	if err == nil {
-		t.Fatal("ListByUserID() error = nil, want error")
+	pool, err := pgxpool.New(context.Background(), databaseURL)
+	if err != nil {
+		t.Fatalf("create test pool: %v", err)
 	}
+	t.Cleanup(pool.Close)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	if err := db.Ping(ctx, pool); err != nil {
+		t.Fatalf("ping test database: %v", err)
+	}
+	if err := db.Migrate(ctx, pool); err != nil {
+		t.Fatalf("migrate test database: %v", err)
+	}
+
+	return pool
 }
